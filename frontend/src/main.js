@@ -5,10 +5,18 @@ import { EffectComposer, RenderPass, BloomEffect, SMAAEffect, EffectPass } from 
 let scene, camera, renderer, composer;
 let physicsWorld;
 let sky;
+let minimap; 
+let minimapContainer; 
+
+// Variables pour la voiture
+let vehicleController;
+let chassisBody;
+let chassisMesh;
+let wheelMeshes = [];
 
 const EARTH_RADIUS = 6378137;
-const CHUNK_SIZE = 500; // Taille d'un chunk en mètres
-const RENDER_DISTANCE = 2; // Rayon autour du joueur (2 = grille 5x5)
+const CHUNK_SIZE = 500; 
+const RENDER_DISTANCE = 2; 
 const CHUNK_CLIP_PADDING = 12;
 let hasStarted = false;
 let baseLat = 0;
@@ -17,47 +25,10 @@ const loadedChunks = new Map();
 const chunksLoading = new Set();
 const chunkQueue = [];
 
-// Variables pour la caméra debug
-let pitch = -0.5, yaw = 0;
-let isDragging = false;
-const keys = { w: false, a: false, s: false, d: false, space: false, shift: false };
+// Contrôles voiture
+const keys = { up: false, down: false, left: false, right: false, brake: false };
 
-// --- Fonctions utilitaires de validation de polygones (Point 4) ---
-function ccw(A, B, C) {
-  return (C.y - A.y) * (B.x - A.x) > (B.y - A.y) * (C.x - A.x);
-}
-
-function segmentsIntersect(p1, p2, p3, p4) {
-  return ccw(p1, p3, p4) !== ccw(p2, p3, p4) && ccw(p1, p2, p3) !== ccw(p1, p2, p4);
-}
-
-function isValidPolygon(points) {
-  if (points.length < 3) return false;
-  
-  // Vérification de l'aire (on ignore les polygones dégénérés < 1m²)
-  let area = 0;
-  for (let i = 0; i < points.length; i++) {
-    const j = (i + 1) % points.length;
-    area += points[i].x * points[j].y;
-    area -= points[j].x * points[i].y;
-  }
-  if (Math.abs(area / 2) < 1.0) return false;
-
-  // Vérification des auto-intersections (O(n^2), ok pour des bâtiments)
-  for (let i = 0; i < points.length; i++) {
-    const p1 = points[i];
-    const p2 = points[(i + 1) % points.length];
-    for (let j = i + 2; j < points.length; j++) {
-      const k = (j + 1) % points.length;
-      if (i === k) continue;
-      const p3 = points[j];
-      const p4 = points[k];
-      if (segmentsIntersect(p1, p2, p3, p4)) return false;
-    }
-  }
-  return true;
-}
-
+// --- Fonctions utilitaires ---
 function clampRoadWidth(width) {
   if (!Number.isFinite(width)) return 4;
   return Math.min(Math.max(width, 2.5), 16);
@@ -168,8 +139,8 @@ function createRoadMesh(points, width, material) {
     const normal = new THREE.Vector3(-tangent.z, 0, tangent.x);
     const left = points[i].clone().add(normal.clone().multiplyScalar(width / 2));
     const right = points[i].clone().add(normal.clone().multiplyScalar(-width / 2));
-    left.y += 0.25;
-    right.y += 0.25;
+    left.y = 0.25; 
+    right.y = 0.25;
 
     pos.push(left.x, left.y, left.z, right.x, right.y, right.z);
   }
@@ -179,7 +150,7 @@ function createRoadMesh(points, width, material) {
 
   for (let i = 0; i < vertexPairs - 1; i++) {
     const a = i * 2;
-    indices.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+    indices.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
   }
 
   const geo = new THREE.BufferGeometry();
@@ -217,13 +188,13 @@ function initThree() {
   window.addEventListener('resize', onWindowResize);
 }
 
-// --- Création de la Skybox (Point 3) ---
+// --- Création de la Skybox ---
 function createSky() {
   const skyGeo = new THREE.SphereGeometry(1500, 32, 15);
   const skyMat = new THREE.ShaderMaterial({
     uniforms: {
-      topColor: { value: new THREE.Color(0x7B6FA8) },    // Zénith
-      bottomColor: { value: new THREE.Color(0xF2A65A) }, // Horizon
+      topColor: { value: new THREE.Color(0x7B6FA8) },
+      bottomColor: { value: new THREE.Color(0xF2A65A) },
       offset: { value: 33 },
       exponent: { value: 0.6 }
     },
@@ -256,12 +227,93 @@ function createSky() {
   scene.add(sky);
 }
 
-// --- Initialisation Physique Rapier ---
+// --- Initialisation Minimap (Leaflet) ---
+function initMinimap() {
+  if (!window.L || !document.getElementById('minimap')) return;
+  
+  minimapContainer = document.getElementById('minimap-rotator');
+
+  minimap = window.L.map('minimap', {
+    zoomControl: false,
+    attributionControl: false, 
+    dragging: false,
+    scrollWheelZoom: false,
+    doubleClickZoom: false,
+    boxZoom: false,
+    keyboard: false,
+    touchZoom: false
+  }).setView([0, 0], 16);
+
+  window.L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+    attribution: 'Tiles &copy; Esri'
+  }).addTo(minimap);
+
+  setTimeout(() => { minimap.invalidateSize(); }, 100);
+}
+
+// --- Initialisation Physique Rapier + Voiture ---
 async function initPhysics() {
   await RAPIER.init();
   physicsWorld = new RAPIER.World({ x: 0.0, y: -9.81, z: 0.0 });
+  
+  // Sol physique
   const groundCollider = RAPIER.ColliderDesc.cuboid(10000, 0.1, 10000);
   physicsWorld.createCollider(groundCollider);
+
+  // --- Création du véhicule ---
+  const chassisHalfExtents = { x: 1.0, y: 0.5, z: 2.0 };
+  const chassisDesc = RAPIER.RigidBodyDesc.dynamic()
+    .setTranslation(0, 2.0, 0)
+    .setLinearDamping(0.5)
+    .setAngularDamping(0.5);
+  
+  chassisBody = physicsWorld.createRigidBody(chassisDesc);
+  
+  const colliderDesc = RAPIER.ColliderDesc.cuboid(chassisHalfExtents.x, chassisHalfExtents.y, chassisHalfExtents.z)
+    .setDensity(1.5)
+    .setFriction(0.5);
+  physicsWorld.createCollider(colliderDesc, chassisBody);
+
+  vehicleController = new RAPIER.DynamicRayCastVehicleController(chassisBody);
+
+  // Roues
+  const wheelPositions = [
+    { x: -1.1, y: -0.4, z: 1.5 },
+    { x: 1.1, y: -0.4, z: 1.5 },
+    { x: -1.1, y: -0.4, z: -1.5 },
+    { x: 1.1, y: -0.4, z: -1.5 }
+  ];
+
+  wheelPositions.forEach(pos => {
+    vehicleController.addWheel(
+      { x: pos.x, y: pos.y, z: pos.z }, // Point de fixation sur le châssis
+      { x: 0, y: -1, z: 0 },            // Direction de la suspension (vers le bas)
+      { x: 1, y: 0, z: 0 },             // Axe de la roue (X)
+      30.0,                              // Suspension Stiffness
+      0.6,                               // Suspension Rest Length
+      0.5,                               // Suspension Max Travel
+      2.0,                               // Suspension Damping
+      4.0,                               // Suspension Compression
+      0.5,                               // Rayon de la roue
+      1.5,                               // Friction Slip
+      0.1,                               // Rolling Resistance
+      0.7                                // Max Steering Angle
+    );
+
+    // Mesh de la roue
+    const wheelGeo = new THREE.CylinderGeometry(0.5, 0.5, 0.4, 16);
+    wheelGeo.rotateZ(Math.PI / 2); 
+    const wheelMat = new THREE.MeshStandardMaterial({ color: 0x111111 });
+    const wheelMesh = new THREE.Mesh(wheelGeo, wheelMat);
+    scene.add(wheelMesh);
+    wheelMeshes.push(wheelMesh);
+  });
+
+  // Mesh du châssis
+  const carGeo = new THREE.BoxGeometry(chassisHalfExtents.x * 2, chassisHalfExtents.y * 2, chassisHalfExtents.z * 2);
+  const carMat = new THREE.MeshStandardMaterial({ color: 0xF2A65A });
+  chassisMesh = new THREE.Mesh(carGeo, carMat);
+  scene.add(chassisMesh);
 }
 
 // --- Conversions GPS <-> 3D ---
@@ -279,11 +331,12 @@ function vector3ToLatLon(x, z) {
 
 // --- Gestion des Chunks ---
 function updateChunks() {
-    if (!hasStarted) return;
-  const camX = Math.floor(camera.position.x / CHUNK_SIZE);
-  const camZ = Math.floor(camera.position.z / CHUNK_SIZE);
+  if (!hasStarted) return;
+  
+  const carPos = chassisBody ? chassisBody.translation() : { x: 0, z: 0 };
+  const camX = Math.floor(carPos.x / CHUNK_SIZE);
+  const camZ = Math.floor(carPos.z / CHUNK_SIZE);
 
-  // 1. Décharger les chunks trop loins
   for (const [key, chunk] of loadedChunks) {
     const dx = Math.abs(chunk.gridX - camX);
     const dz = Math.abs(chunk.gridZ - camZ);
@@ -296,7 +349,6 @@ function updateChunks() {
     }
   }
 
-  // 2. Identifier les chunks à charger
   for (let x = camX - RENDER_DISTANCE; x <= camX + RENDER_DISTANCE; x++) {
     for (let z = camZ - RENDER_DISTANCE; z <= camZ + RENDER_DISTANCE; z++) {
       const key = `${x}_${z}`;
@@ -306,7 +358,6 @@ function updateChunks() {
     }
   }
 
-  // 3. Traiter la file d'attente (1 à la fois pour Overpass)
   if (chunkQueue.length > 0 && chunksLoading.size < 1) {
     loadChunk(chunkQueue.shift());
   }
@@ -331,82 +382,11 @@ async function loadChunk(chunkInfo) {
 
     const offsetVec = latLonToVector3(center.lat, center.lon);
     
-    // 1. Terrain (Point 1 : Utilisation de l'élévation réelle du backend)
-    const terrainGeo = new THREE.PlaneGeometry(CHUNK_SIZE, CHUNK_SIZE, data.terrain.segments, data.terrain.segments);
+    const terrainGeo = new THREE.PlaneGeometry(CHUNK_SIZE, CHUNK_SIZE, 1, 1);
     terrainGeo.rotateX(-Math.PI / 2);
-    const positions = terrainGeo.attributes.position;
-    const heights = data.terrain.heights;
-    
-    for (let i = 0; i < positions.count; i++) {
-      positions.setY(i, heights[i]);
-    }
-    terrainGeo.computeVertexNormals();
-    const terrainMesh = new THREE.Mesh(terrainGeo, new THREE.MeshStandardMaterial({ color: 0x7A8C4E, flatShading: true }));
+    const terrainMesh = new THREE.Mesh(terrainGeo, new THREE.MeshStandardMaterial({ color: 0x7A8C4E }));
     group.add(terrainMesh);
 
-    // 2. Bâtiments (Point 4 : Validation des polygones et fallback)
-    const buildingMat = new THREE.MeshStandardMaterial({ color: 0xC97B4C, flatShading: true });
-    data.buildings.forEach(b => {
-      if (b.geometry.length < 3) return;
-      
-      // On mappe en points locaux, en utilisant l'élévation réelle du backend
-      const points3D = b.geometry.map(p => {
-        const v = latLonToVector3(p.lat, p.lon);
-        v.y = p.elevation || 0;
-        return v;
-      });
-      const localPts = points3D.map(p => new THREE.Vector3(p.x - offsetVec.x, p.y, p.z - offsetVec.z));
-
-      // Nettoyage : suppression des doublons et du point de fermeture redondant
-      const cleanPts = [];
-      for (let i = 0; i < localPts.length; i++) {
-        const last = cleanPts[cleanPts.length - 1];
-        if (!last || last.distanceTo(localPts[i]) > 0.1) {
-          cleanPts.push(localPts[i]);
-        }
-      }
-      if (cleanPts.length > 2 && cleanPts[0].distanceTo(cleanPts[cleanPts.length - 1]) < 0.1) {
-        cleanPts.pop();
-      }
-
-      const pts2D = cleanPts.map(p => ({ x: p.x, y: p.z }));
-
-      let height = 10;
-      if (b.tags['building:levels']) height = parseInt(b.tags['building:levels']) * 3;
-      else if (b.tags['height']) height = parseFloat(b.tags['height']);
-      if (isNaN(height) || height > 150) height = 10 + Math.random() * 5;
-      else height += Math.random() * 2;
-
-      try {
-        if (!isValidPolygon(pts2D)) throw new Error("Polygone invalide ou dégénéré");
-
-        const shape = new THREE.Shape();
-        shape.moveTo(pts2D[0].x, pts2D[0].y);
-        for (let i = 1; i < pts2D.length; i++) shape.lineTo(pts2D[i].x, pts2D[i].y);
-        shape.closePath();
-
-        const geo = new THREE.ExtrudeGeometry(shape, { depth: height, bevelEnabled: false });
-        geo.rotateX(-Math.PI / 2);
-        
-        const buildingY = cleanPts[0].y;
-        geo.translate(0, buildingY + 0.1, 0);
-        group.add(new THREE.Mesh(geo, buildingMat));
-      } catch (e) {
-        // Fallback boîte englobante si polygone invalide
-        const box = new THREE.Box3();
-        cleanPts.forEach(p => box.expandByPoint(p));
-        if (box.isEmpty()) return; // Ignorer silencieusement si rien à afficher
-        
-        const size = new THREE.Vector3(); box.getSize(size);
-        const centerBox = new THREE.Vector3(); box.getCenter(centerBox);
-        const mesh = new THREE.Mesh(new THREE.BoxGeometry(size.x, height, size.z), buildingMat);
-        const buildingY = centerBox.y;
-        mesh.position.set(centerBox.x, buildingY + height / 2 + 0.1, centerBox.z);
-        group.add(mesh);
-      }
-    });
-
-    // 3. Routes (Point 1 : Élévation réelle du backend)
     const roadMat = new THREE.MeshStandardMaterial({
       color: 0x2C2C34,
       roughness: 0.8,
@@ -418,7 +398,7 @@ async function loadChunk(chunkInfo) {
       if (r.geometry.length < 2) return;
       const points3D = r.geometry.map(p => {
         const v = latLonToVector3(p.lat, p.lon);
-        v.y = p.elevation || 0;
+        v.y = 0;
         return v;
       });
       const localPts = points3D.map(p => new THREE.Vector3(p.x - offsetVec.x, p.y, p.z - offsetVec.z));
@@ -456,12 +436,22 @@ async function searchAddress() {
       baseLat = data.lat;
       baseLon = data.lon;
       hasStarted = true;
+      
       loadedChunks.forEach(c => scene.remove(c.group));
       loadedChunks.clear();
       chunkQueue.length = 0;
 
-      camera.position.set(0, 100, 100);
-      yaw = 0; pitch = -0.5;
+      if (chassisBody) {
+        chassisBody.setTranslation({ x: 0, y: 2.0, z: 0 }, true);
+        chassisBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
+        chassisBody.setAngvel({ x: 0, y: 0, z: 0 }, true);
+        chassisBody.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
+      }
+      
+      if (minimap) {
+        minimap.setView([baseLat, baseLon], 16, { animate: false });
+      }
+      
       updateChunks();
     } else {
       alert("Adresse introuvable.");
@@ -471,35 +461,21 @@ async function searchAddress() {
   }
 }
 
-// --- Contrôles Caméra Debug ---
+// --- Contrôles Voiture ---
 function setupControls() {
-  const canvas = document.getElementById('game-canvas');
-  
-  canvas.addEventListener('mousedown', () => isDragging = true);
-  canvas.addEventListener('mouseup', () => isDragging = false);
-  canvas.addEventListener('mouseleave', () => isDragging = false);
-  canvas.addEventListener('mousemove', (e) => {
-    if (!isDragging) return;
-    yaw -= e.movementX * 0.002;
-    pitch -= e.movementY * 0.002;
-    pitch = Math.max(-Math.PI/2 + 0.1, Math.min(Math.PI/2 - 0.1, pitch));
-  });
-
   window.addEventListener('keydown', (e) => {
-    if (e.code === 'KeyW') keys.w = true;
-    if (e.code === 'KeyA') keys.a = true;
-    if (e.code === 'KeyS') keys.s = true;
-    if (e.code === 'KeyD') keys.d = true;
-    if (e.code === 'Space') keys.space = true;
-    if (e.code === 'ShiftLeft') keys.shift = true;
+    if (e.code === 'KeyW' || e.code === 'ArrowUp') keys.up = true;
+    if (e.code === 'KeyS' || e.code === 'ArrowDown') keys.down = true;
+    if (e.code === 'KeyA' || e.code === 'ArrowLeft') keys.left = true;
+    if (e.code === 'KeyD' || e.code === 'ArrowRight') keys.right = true;
+    if (e.code === 'Space') keys.brake = true;
   });
   window.addEventListener('keyup', (e) => {
-    if (e.code === 'KeyW') keys.w = false;
-    if (e.code === 'KeyA') keys.a = false;
-    if (e.code === 'KeyS') keys.s = false;
-    if (e.code === 'KeyD') keys.d = false;
-    if (e.code === 'Space') keys.space = false;
-    if (e.code === 'ShiftLeft') keys.shift = false;
+    if (e.code === 'KeyW' || e.code === 'ArrowUp') keys.up = false;
+    if (e.code === 'KeyS' || e.code === 'ArrowDown') keys.down = false;
+    if (e.code === 'KeyA' || e.code === 'ArrowLeft') keys.left = false;
+    if (e.code === 'KeyD' || e.code === 'ArrowRight') keys.right = false;
+    if (e.code === 'Space') keys.brake = false;
   });
 
   document.getElementById('search-btn').addEventListener('click', searchAddress);
@@ -508,25 +484,62 @@ function setupControls() {
   });
 }
 
-function updateCameraMovement() {
-  camera.rotation.order = 'YXZ';
-  camera.rotation.y = yaw;
-  camera.rotation.x = pitch;
+function updateVehicleAndCamera() {
+  if (!vehicleController || !chassisBody) return;
 
-  const speed = keys.shift ? 100 : 40;
-  const dir = new THREE.Vector3();
-  camera.getWorldDirection(dir);
-  dir.y = 0; dir.normalize();
+  const maxForce = 20.0;
+  const maxSteer = 0.5;
 
-  const right = new THREE.Vector3();
-  right.crossVectors(dir, new THREE.Vector3(0, 1, 0));
+  let engineForce = 0;
+  let brakeForce = 0;
+  let steerAngle = 0;
 
-  if (keys.w) camera.position.add(dir.clone().multiplyScalar(speed));
-  if (keys.s) camera.position.add(dir.clone().multiplyScalar(-speed));
-  if (keys.a) camera.position.add(right.clone().multiplyScalar(-speed));
-  if (keys.d) camera.position.add(right.clone().multiplyScalar(speed));
-  if (keys.space) camera.position.y += speed;
-  if (keys.shift) camera.position.y -= speed;
+  if (keys.up) engineForce = maxForce;
+  if (keys.down) engineForce = -maxForce * 0.5; 
+  if (keys.left) steerAngle = maxSteer;
+  if (keys.right) steerAngle = -maxSteer;
+  if (keys.brake) {
+    engineForce = 0;
+    brakeForce = 10.0;
+  }
+
+  // CORRECTION API RAPIER : On applique les forces roue par roue
+  // Moteur (4 roues motrices pour la simplicité)
+  for (let i = 0; i < 4; i++) {
+    vehicleController.setWheelEngineForce(i, engineForce);
+    vehicleController.setWheelBrake(i, brakeForce);
+  }
+
+  // Direction (Roues avant uniquement)
+  vehicleController.setWheelSteering(0, steerAngle);
+  vehicleController.setWheelSteering(1, steerAngle);
+
+  vehicleController.updateVehicle(1 / 60); 
+
+  // Synchroniser les meshes Three.js
+  const pos = chassisBody.translation();
+  const rot = chassisBody.rotation();
+  chassisMesh.position.set(pos.x, pos.y, pos.z);
+  chassisMesh.quaternion.set(rot.x, rot.y, rot.z, rot.w);
+
+  for (let i = 0; i < 4; i++) {
+    const wheel = vehicleController.wheel(i);
+    const wPos = wheel.worldSpacePosition();
+    const wRot = wheel.worldSpaceRotation();
+    wheelMeshes[i].position.set(wPos.x, wPos.y, wPos.z);
+    wheelMeshes[i].quaternion.set(wRot.x, wRot.y, wRot.z, wRot.w);
+  }
+
+  // --- Caméra 3ème personne ---
+  const idealOffset = new THREE.Vector3(0, 5, -12);
+  idealOffset.applyQuaternion(chassisMesh.quaternion);
+  idealOffset.add(chassisMesh.position);
+
+  camera.position.lerp(idealOffset, 0.1);
+
+  const lookAtTarget = chassisMesh.position.clone();
+  lookAtTarget.y += 1.0;
+  camera.lookAt(lookAtTarget);
 }
 
 function onWindowResize() {
@@ -538,15 +551,30 @@ function onWindowResize() {
 
 function animate() {
   requestAnimationFrame(animate);
-  updateCameraMovement();
+  updateVehicleAndCamera();
   if (sky) sky.position.copy(camera.position);
   updateChunks();
+  
+  if (minimap && hasStarted && minimapContainer && chassisBody) {
+    const pos = chassisBody.translation();
+    const { lat, lon } = vector3ToLatLon(pos.x, pos.z);
+    minimap.setView([lat, lon], minimap.getZoom(), { animate: false });
+    
+    const forward = new THREE.Vector3(0, 0, 1);
+    forward.applyQuaternion(chassisMesh.quaternion);
+    const carYaw = Math.atan2(forward.x, forward.z);
+    
+    const mapDegrees = -carYaw * (180 / Math.PI) + 180;
+    minimapContainer.style.transform = `translate(-50%, -50%) rotate(${mapDegrees}deg)`;
+  }
+  
   if (physicsWorld) physicsWorld.step();
   composer.render();
 }
 
 async function main() {
   initThree();
+  initMinimap();
   await initPhysics();
   setupControls();
   animate();

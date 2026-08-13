@@ -9,7 +9,7 @@ import { fromArrayBuffer } from 'geotiff';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = 3001;
-const CHUNK_CACHE_VERSION = 'v2';
+const CHUNK_CACHE_VERSION = 'v3'; // CORRECTION POINT 3 : Passage à v3 pour invalider le cache
 const USER_AGENT = 'JeuVoitureNavigateur/1.0 (prototype real-road driving)';
 
 // Dossiers de cache
@@ -238,20 +238,20 @@ app.get('/api/chunk', async (req, res) => {
 
     const roads = [];
     const buildings = [];
+    let rawWaysCount = 0;
 
     for (const el of overpassData.elements) {
       if (el.type === 'way' && el.geometry) {
+        rawWaysCount++;
         for (const point of el.geometry) {
           point.elevation = await getElevation(point.lat, point.lon);
         }
 
-        if (el.tags && el.tags.building) {
+        // CORRECTION POINT 3 : Utilisation des fonctions de filtrage dédiées
+        if (shouldIncludeBuilding(el.tags)) {
           buildings.push({ id: el.id, tags: el.tags, geometry: el.geometry });
-        } else if (el.tags && el.tags.highway) {
-          const exclude = ['footway', 'path', 'pedestrian', 'steps'];
-          if (!exclude.includes(el.tags.highway)) {
-            roads.push({ id: el.id, tags: el.tags, geometry: el.geometry });
-          }
+        } else if (isDrivableRoad(el.tags)) {
+          roads.push({ id: el.id, tags: el.tags, geometry: el.geometry });
         }
       }
     }
@@ -276,7 +276,7 @@ app.get('/api/chunk', async (req, res) => {
     };
 
     fs.writeFileSync(cacheFilePath, JSON.stringify(result));
-    console.log(`[Chunk] Généré: ${roads.length} routes, ${buildings.length} bâtiments`);
+    console.log(`[Chunk] Généré: ${roads.length} routes, ${buildings.length} bâtiments (filtrés parmi ${rawWaysCount} ways OSM bruts)`);
     res.json(result);
   } catch (error) {
     console.error("[Chunk] Erreur finale:", error.message);

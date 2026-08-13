@@ -5,6 +5,66 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Jeu de conduite - Prototype</title>
     <link rel="stylesheet" href="./style.css" />
+    
+    <!-- Leaflet CSS pour la minimap -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    
+    <!-- Style spécifique pour la minimap (bas à gauche) -->
+    <style>
+      #minimap-wrapper {
+        position: fixed;
+        bottom: 20px;
+        left: 20px;
+        width: 220px;
+        height: 220px;
+        z-index: 1000;
+        border: 2px solid #F2A65A;
+        border-radius: 8px;
+        overflow: hidden;
+        box-shadow: 0 4px 10px rgba(0, 0, 0, 0.4);
+        background-color: #000; /* Fond noir en attendant le chargement des tuiles */
+      }
+      
+      #minimap-rotator {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        width: 320px; /* Plus grand que le wrapper pour éviter les coins noirs en rotation */
+        height: 320px;
+        transform: translate(-50%, -50%) rotate(0deg); /* Le JS mettra à jour rotate() */
+        transform-origin: center center;
+      }
+
+      #minimap {
+        width: 100%;
+        height: 100%;
+      }
+
+      /* Icône du joueur (Flèche au centre) */
+      #player-arrow {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        width: 0;
+        height: 0;
+        border-left: 8px solid transparent;
+        border-right: 8px solid transparent;
+        border-bottom: 16px solid #F2A65A;
+        transform: translate(-50%, -50%);
+        z-index: 1001; /* Au-dessus de la carte Leaflet */
+        filter: drop-shadow(0 0 4px rgba(0,0,0,0.8));
+      }
+
+      /* Ajustement de l'attribution Leaflet pour rentrer dans la petite boîte */
+      .leaflet-control-attribution {
+        font-size: 8px !important;
+        background: rgba(0, 0, 0, 0.6) !important;
+        color: #ccc !important;
+      }
+      .leaflet-control-attribution a {
+        color: #F2A65A !important;
+      }
+    </style>
   </head>
   <body>
     <!-- UI Minimale -->
@@ -22,6 +82,18 @@
     </div>
 
     <canvas id="game-canvas"></canvas>
+    
+    <!-- Container de la Minimap + Rotator + Flèche -->
+    <div id="minimap-wrapper">
+      <div id="minimap-rotator">
+        <div id="minimap"></div>
+      </div>
+      <div id="player-arrow"></div>
+    </div>
+    
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>
