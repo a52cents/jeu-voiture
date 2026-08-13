@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Jeu de conduite - Prototype</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <!-- UI Minimale -->
+    <div id="ui-container">
+      <div id="search-bar">
+        <input type="text" id="address-input" placeholder="Tapez une adresse..." />
+        <button id="search-btn">Go</button>
+      </div>
+      <div id="speedometer">0 km/h</div>
+    </div>
+    
+    <!-- Obligation légale ODbL -->
+    <div id="osm-attribution">
+      Map data © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors
+    </div>
+
+    <canvas id="game-canvas"></canvas>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

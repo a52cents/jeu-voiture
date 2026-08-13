@@ -1,0 +1,43 @@
+# Dépendances
+node_modules/
+**/node_modules/
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Build et cache de production
+dist/
+dist-ssr/
+*.local
+.vite/
+.cache/
+
+# Variables d'environnement (ne jamais committer les secrets)
+.env
+.env.local
+.env.*.local
+
+# Fichiers système et IDE
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+.idea
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Fichiers de cache de l'OS
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
