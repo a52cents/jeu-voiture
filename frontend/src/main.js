@@ -31,83 +31,67 @@ let roadGeo = null;
 let roadMats = [];
 let grassTexture = null;
 
-// ====== RÉGLAGES MODÈLE 3D (pack PSX GGBot) ======
 const CAR_MODEL_URL = '/models/car_01.glb';
 const CAR_WHEEL_URL = '/models/wheel.glb';
 const CAR_FALLBACK_URL = 'https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Models/master/2.0/CesiumMilkTruck/glTF-Binary/CesiumMilkTruck.glb';
-
-// ====== ROUTE 3D PSX (Sketchfab "Psx road" by BUBUK, CC-BY) ======
 const ROAD_MODEL_URL = '/models/psx_road.glb';
 
-// ====== HERBE PSX ======
 const GRASS_URLS = [
     '/src/grass.jpg',
     'https://raw.githubusercontent.com/mrdoob/three.js/dev/examples/textures/terrain/grasslight-big.jpg'
 ];
 const GRASS_TILE_SIZE = 6;
 
-// ============================================================
-// ÉCHELLE DU MONDE
-// WORLD_SCALE > 1 agrandit terrain + routes proportionnellement.
-// La voiture et la caméra ne changent PAS (effet arcade : monde
-// plus grand, routes plus larges, voiture relativement plus petite).
-// ============================================================
 const WORLD_SCALE = 2;
 
 // ============================================================
-// POST-PROCESSING "PSX SUBTIL" — couleurs d'origine préservées
+// ROUTES : style de rendu
+//   'flat'     = procédurale (canvas par chunk, ZÉRO artefact)
+//   'segments' = modèle 3D instancié (ton modèle psx_road.glb)
 // ============================================================
+const ROAD_STYLE = 'flat';
+
 const PSX_FX = {
-    toneMapping: false,
-    pixelation: 1,
-    colorBits: 8,
-    grain: 0.025,
-    scanlines: 0.05,
-    vignette: 0.4,
-    chroma: 0.0006,
-    bloom: 0.3
+    toneMapping: false, pixelation: 1, colorBits: 8,
+    grain: 0.025, scanlines: 0.05, vignette: 0.4,
+    chroma: 0.0006, bloom: 0.3
 };
 
 const MIRROR_CAR = true;
-let MIRROR_MODE = 'auto'; // touche M en jeu
+let MIRROR_MODE = 'auto';
 const FLIP_CAR = true;
 const CAR_UPSIDE_DOWN = false;
 
-// ====== DIMENSIONS ======
-const CAR_LENGTH = 4.4;
-const WHEEL_RADIUS = 0.3;
-const WHEEL_WIDTH = 0.4;
-const SUSPENSION_REST = 0.8;
-const WHEEL_TRACK_X = 0.8;
-const WHEEL_BASE_Z = 1.3;
+const CAR_LENGTH = 4.8;
+const WHEEL_RADIUS = 0.33;
+const WHEEL_WIDTH = 0.42;
+const SUSPENSION_REST = 0.6;
+const WHEEL_TRACK_X = 0.95;
+const WHEEL_BASE_Z = 1.4;
 
-// ====== POIDS ======
 const CAR_MASS = 900;
 const REF_MASS = 12;
 const MS = CAR_MASS / REF_MASS;
 
-// ====== SUSPENSION ======
-const SUSPENSION_STIFFNESS = 50;
-const SUSPENSION_COMPRESSION = 4.0;
-const SUSPENSION_RELAXATION = 2.0;
-const SUSPENSION_MAX_TRAVEL = 0.4;
+const SUSPENSION_STIFFNESS = 45;
+const SUSPENSION_COMPRESSION = 0.83;
+const SUSPENSION_RELAXATION = 0.88;
+const SUSPENSION_MAX_TRAVEL = 0.3;
 
-// ====== CONDUITE TYPE "NEED FOR SPEED" ======
-const ENGINE_FORCE = 90;
-const REVERSE_FORCE = 40;
-const MAX_SPEED = 55;
-const MAX_REVERSE_SPEED = 12;
-const BRAKE_FORCE = 3;
-const THROTTLE_SMOOTH = 3.5;
-const BRAKE_SMOOTH = 4;
-const STEER_MAX_LOW = 0.55;
-const STEER_MAX_HIGH = 0.10;
-const STEER_FADE_SPEED = 30;
+const ENGINE_FORCE = 55;
+const REVERSE_FORCE = 30;
+const MAX_SPEED = 50;
+const MAX_REVERSE_SPEED = 10;
+const BRAKE_FORCE = 1.2;
+const THROTTLE_SMOOTH = 2.5;
+const BRAKE_SMOOTH = 2.5;
+const STEER_MAX_LOW = 0.45;
+const STEER_MAX_HIGH = 0.08;
+const STEER_FADE_SPEED = 25;
 const STEER_SMOOTH = 3;
 const STEER_CENTER = 5;
-const GRIP = 4;
+const GRIP = 0.1;
 
-// ====== CAMÉRA ORBITALE ======
 let dragging = false, lastPX = 0, lastPY = 0;
 let camYawOffset = 0, camPitch = 0.35, camDist = 10;
 
@@ -117,9 +101,9 @@ let currentSteer = 0;
 const _fwd = new THREE.Vector3();
 
 const EARTH_RADIUS = 6378137;
-const CHUNK_SIZE = 500;                              // taille logique (pour la grille et les requêtes backend)
-const WORLD_CHUNK_SIZE = CHUNK_SIZE * WORLD_SCALE;   // taille effective d'un chunk en espace 3D
-const WORLD_CLIP_PADDING = 12 * WORLD_SCALE;         // marge de clip en coordonnées scalées
+const CHUNK_SIZE = 1000;
+const WORLD_CHUNK_SIZE = CHUNK_SIZE * WORLD_SCALE;
+const WORLD_CLIP_PADDING = 12 * WORLD_SCALE;
 const RENDER_DISTANCE = 2;
 let hasStarted = false;
 let baseLat = 0;
@@ -129,6 +113,92 @@ const chunksLoading = new Set();
 const chunkQueue = [];
 
 const keys = { up: false, down: false, left: false, right: false, brake: false };
+
+// ============================================================
+// ÉDITEUR DE CALAGE VOITURE (touche E)
+// ============================================================
+const DEFAULT_CAR_CONFIG = {
+    bodyY: 0.236,
+    bodyScale: 1.04,
+    bodyRotY: 0,
+    wheelY: 0,
+    wheelTrack: 0,
+    wheelBase: 0,
+    wheelScale: 1.06,
+};
+let CAR_CONFIG = { ...DEFAULT_CAR_CONFIG };
+try { Object.assign(CAR_CONFIG, JSON.parse(localStorage.getItem('psx_car_config') || '{}')); } catch (e) {}
+
+const EDITOR_PARAMS = [
+    { key: 'bodyY',      label: 'Caisse haut/bas',  step: 0.05 },
+    { key: 'bodyScale',  label: 'Caisse taille',    step: 0.02 },
+    { key: 'bodyRotY',   label: 'Caisse rotation',  step: 0.02 },
+    { key: 'wheelY',     label: 'Roues haut/bas',   step: 0.05 },
+    { key: 'wheelTrack', label: 'Roues ecart X',    step: 0.05 },
+    { key: 'wheelBase',  label: 'Roues ecart Z',    step: 0.05 },
+    { key: 'wheelScale', label: 'Roues taille',     step: 0.02 },
+];
+let editorActive = false;
+let editorSel = 0;
+let editorHUD = null;
+let editorMsg = '';
+
+function initEditorHUD() {
+    editorHUD = document.createElement('div');
+    editorHUD.style.cssText = 'position:fixed;top:10px;right:10px;z-index:9999;background:rgba(20,15,10,.88);color:#ffd9a0;font:12px monospace;padding:10px 12px;border:1px solid #f2a65a;border-radius:6px;white-space:pre;display:none;box-shadow:0 2px 8px rgba(0,0,0,.4);';
+    document.body.appendChild(editorHUD);
+}
+
+function renderEditorHUD() {
+    if (!editorHUD) return;
+    let txt = 'EDITEUR VOITURE (E = quitter)\nfleches = regler (Shift = precis)\n1-7 = choisir | S = sauver | R = reset\n-------------------------------\n';
+    EDITOR_PARAMS.forEach((p, i) => {
+        txt += (i === editorSel ? '> ' : '  ') + (i + 1) + ' ' + p.label + ' : ' + CAR_CONFIG[p.key].toFixed(2) + '\n';
+    });
+    if (editorMsg) txt += '\n>> ' + editorMsg;
+    editorHUD.textContent = txt;
+}
+
+function saveCarConfig() {
+    localStorage.setItem('psx_car_config', JSON.stringify(CAR_CONFIG));
+    console.log('CONFIG VOITURE (copie-colle) :', JSON.stringify(CAR_CONFIG));
+    editorMsg = 'SAUVEGARDE OK';
+    setTimeout(() => { editorMsg = ''; renderEditorHUD(); }, 1500);
+}
+
+function handleEditorKey(e) {
+    if (e.code === 'KeyE') {
+        editorActive = !editorActive;
+        if (editorHUD) editorHUD.style.display = editorActive ? 'block' : 'none';
+        keys.up = keys.down = keys.left = keys.right = keys.brake = false;
+        renderEditorHUD();
+        e.preventDefault();
+        return true;
+    }
+    if (!editorActive) return false;
+
+    const p = EDITOR_PARAMS[editorSel];
+    const s = p.step * (e.shiftKey ? 0.25 : 1);
+    switch (e.code) {
+        case 'ArrowUp': case 'ArrowRight':
+            CAR_CONFIG[p.key] = Math.round((CAR_CONFIG[p.key] + s) * 1000) / 1000;
+            rebuildCar(); break;
+        case 'ArrowDown': case 'ArrowLeft':
+            CAR_CONFIG[p.key] = Math.round((CAR_CONFIG[p.key] - s) * 1000) / 1000;
+            rebuildCar(); break;
+        case 'KeyS': saveCarConfig(); break;
+        case 'KeyR':
+            CAR_CONFIG = { ...DEFAULT_CAR_CONFIG };
+            rebuildCar();
+            editorMsg = 'RESET'; setTimeout(() => { editorMsg = ''; renderEditorHUD(); }, 1200);
+            break;
+        default:
+            if (/^Digit[1-7]$/.test(e.code)) { editorSel = parseInt(e.code.slice(5), 10) - 1; renderEditorHUD(); }
+    }
+    renderEditorHUD();
+    e.preventDefault();
+    return true;
+}
 
 // --- Utilitaires routes/chunks ---
 function clampRoadWidth(width) {
@@ -143,7 +213,7 @@ function getRoadWidth(tags) {
     else if (tags.highway === 'motorway' || tags.highway === 'trunk') w = 10;
     else if (tags.highway === 'primary' || tags.highway === 'secondary') w = 7;
     else w = 4;
-    return w * WORLD_SCALE; // <<< routes plus larges
+    return w * WORLD_SCALE;
 }
 
 function isPointInChunk(point, padding = WORLD_CLIP_PADDING) {
@@ -164,7 +234,6 @@ function clipSegmentToChunk(a, b, padding = WORLD_CLIP_PADDING) {
     const minX = -limit, maxX = limit, minZ = -limit, maxZ = limit;
     const dx = b.x - a.x, dz = b.z - a.z;
     let t0 = 0, t1 = 1;
-
     const clip = (p, q) => {
         if (p === 0) return q >= 0;
         const r = q / p;
@@ -172,7 +241,6 @@ function clipSegmentToChunk(a, b, padding = WORLD_CLIP_PADDING) {
         else { if (r < t0) return false; if (r < t1) t1 = r; }
         return true;
     };
-
     if (clip(-dx, a.x - minX) && clip(dx, maxX - a.x) &&
         clip(-dz, a.z - minZ) && clip(dz, maxZ - a.z)) {
         return [interpolatePoint(a, b, t0), interpolatePoint(a, b, t1)];
@@ -226,10 +294,87 @@ function samplePolyline(points, s) {
     return null;
 }
 
+// ============================================================
+// ROUTES PROCÉDURALES : dessine un canvas par chunk
+// - Les polylines sont tracées au pinceau avec lineWidth
+// - lineJoin/lineCap = round → jonctions et virages parfaits
+// - 1 draw call par chunk (1 plan + 1 texture)
+// ============================================================
+const ROAD_CANVAS_SIZE = 1024; // résolution du canvas par chunk
+
+function createRoadCanvas(polylines) {
+    const c = document.createElement('canvas');
+    c.width = ROAD_CANVAS_SIZE;
+    c.height = ROAD_CANVAS_SIZE;
+    const ctx = c.getContext('2d');
+
+    // Fond transparent (seul le tracé apparaît sur l'herbe)
+    ctx.clearRect(0, 0, ROAD_CANVAS_SIZE, ROAD_CANVAS_SIZE);
+
+    if (polylines.length === 0) return c;
+
+    // Conversion coordonnées 3D locales → pixels canvas
+    // Chunk centré en (0,0) couvre [-WORLD_CHUNK_SIZE/2, WORLD_CHUNK_SIZE/2]
+    const half = WORLD_CHUNK_SIZE / 2;
+    const toPixel = (p) => ({
+        x: (p.x + half) / WORLD_CHUNK_SIZE * ROAD_CANVAS_SIZE,
+        y: (p.z + half) / WORLD_CHUNK_SIZE * ROAD_CANVAS_SIZE
+    });
+
+    // 2 passes par route : bordure sombre + bitume (effet routier)
+    const drawPass = (polylines, lineWidth, color) => {
+        ctx.strokeStyle = color;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.lineWidth = lineWidth;
+
+        for (const polyline of polylines) {
+            if (polyline.length < 2) continue;
+            ctx.beginPath();
+            const p0 = toPixel(polyline[0]);
+            ctx.moveTo(p0.x, p0.y);
+            for (let i = 1; i < polyline.length; i++) {
+                const p = toPixel(polyline[i]);
+                ctx.lineTo(p.x, p.y);
+            }
+            ctx.stroke();
+        }
+    };
+
+    // On groupe les polylines par largeur (plus propre visuellement)
+    // et on dessine : d'abord toutes les bordures, puis tous les bitumes
+    const roadGroups = new Map();
+    for (const { polyline, width, isHighway } of polylines) {
+        const key = `${width.toFixed(1)}_${isHighway}`;
+        if (!roadGroups.has(key)) roadGroups.set(key, { polylines: [], width, isHighway });
+        roadGroups.get(key).polylines.push(polyline);
+    }
+
+    // Facteur de conversion : mètres 3D → pixels canvas
+    const metersToPx = ROAD_CANVAS_SIZE / WORLD_CHUNK_SIZE;
+
+    for (const { polylines: pl, width, isHighway } of roadGroups.values()) {
+        // Bordure : bitume + 0.6m de chaque côté
+        const borderPx = (width + 1.2) * metersToPx;
+        drawPass(pl, borderPx, '#1a1a22');
+        // Bitume principal
+        const asphaltPx = width * metersToPx;
+        drawPass(pl, asphaltPx, '#3a3a44');
+        // Ligne centrale pointillée pour les routes importantes
+        if (isHighway) {
+            ctx.setLineDash([8, 14]);
+            drawPass(pl, Math.max(2, asphaltPx * 0.08), '#e8c97a');
+            ctx.setLineDash([]);
+        }
+    }
+
+    return c;
+}
+
 function createRoadMesh(points, width, material) {
     if (points.length < 2) return null;
     const pos = [], indices = [];
-    const roadY = 0.25 * WORLD_SCALE; // <<< hauteur des routes scalée
+    const roadY = 0.25 * WORLD_SCALE;
     for (let i = 0; i < points.length; i++) {
         const prev = points[Math.max(0, i - 1)];
         const next = points[Math.min(points.length - 1, i + 1)];
@@ -256,7 +401,6 @@ function createRoadMesh(points, width, material) {
     return new THREE.Mesh(geo, material);
 }
 
-// --- Three.js ---
 function initThree() {
     scene = new THREE.Scene();
     scene.fog = new THREE.Fog(0xE8B98A, 200 * WORLD_SCALE, 1200 * WORLD_SCALE);
@@ -285,12 +429,8 @@ function initThree() {
             radius: 0.7
         })
     ];
-    if (PSX_FX.toneMapping) {
-        baseEffects.push(new ToneMappingEffect({ mode: ToneMappingMode.ACES_FILMIC }));
-    }
-    if (PSX_FX.vignette > 0) {
-        baseEffects.push(new VignetteEffect({ offset: 0.28, darkness: PSX_FX.vignette }));
-    }
+    if (PSX_FX.toneMapping) baseEffects.push(new ToneMappingEffect({ mode: ToneMappingMode.ACES_FILMIC }));
+    if (PSX_FX.vignette > 0) baseEffects.push(new VignetteEffect({ offset: 0.28, darkness: PSX_FX.vignette }));
     composer.addPass(new EffectPass(camera, ...baseEffects));
 
     if (PSX_FX.chroma > 0) {
@@ -300,11 +440,9 @@ function initThree() {
             modulationOffset: 0.45
         })));
     }
-
     if (PSX_FX.pixelation > 1) {
         composer.addPass(new EffectPass(camera, new PixelationEffect(PSX_FX.pixelation)));
     }
-
     const overlayEffects = [];
     if (PSX_FX.grain > 0) {
         const noise = new NoiseEffect({ blendFunction: BlendFunction.ADD });
@@ -316,12 +454,8 @@ function initThree() {
         scan.blendMode.opacity.value = PSX_FX.scanlines;
         overlayEffects.push(scan);
     }
-    if (PSX_FX.colorBits < 8) {
-        overlayEffects.push(new ColorDepthEffect({ bits: PSX_FX.colorBits }));
-    }
-    if (overlayEffects.length > 0) {
-        composer.addPass(new EffectPass(camera, ...overlayEffects));
-    }
+    if (PSX_FX.colorBits < 8) overlayEffects.push(new ColorDepthEffect({ bits: PSX_FX.colorBits }));
+    if (overlayEffects.length > 0) composer.addPass(new EffectPass(camera, ...overlayEffects));
 
     createSky();
     window.addEventListener('resize', onWindowResize);
@@ -365,7 +499,6 @@ function createSky() {
     scene.add(sky);
 }
 
-// --- Minimap ---
 function initMinimap() {
     if (!window.L || !document.getElementById('minimap')) return;
     minimapContainer = document.getElementById('minimap-rotator');
@@ -380,7 +513,6 @@ function initMinimap() {
     setTimeout(() => { minimap.invalidateSize(); }, 100);
 }
 
-// --- Chargement modèles ---
 async function loadModel(url, fallbackUrl) {
     const doLoad = async (u) => {
         const ext = u.split('.').pop().split('?')[0].toLowerCase();
@@ -399,8 +531,12 @@ async function loadModel(url, fallbackUrl) {
     }
 }
 
-// --- Route PSX : mesure + fusion + scale par WORLD_SCALE ---
 async function loadRoadTemplate() {
+    // Ne charge le modèle de route que si ROAD_STYLE = 'segments'
+    if (ROAD_STYLE !== 'segments') {
+        console.log('Route style = flat (procédurale) → modèle 3D ignoré');
+        return;
+    }
     try {
         const gltf = await new GLTFLoader().loadAsync(ROAD_MODEL_URL);
         const root = gltf.scene;
@@ -423,8 +559,7 @@ async function loadRoadTemplate() {
         root.position.y -= box.min.y;
         holder.updateWorldMatrix(true, true);
 
-        const geos = [];
-        const mats = [];
+        const geos = [], mats = [];
         holder.traverse(o => {
             if (o.isMesh) {
                 const g = o.geometry.clone();
@@ -441,28 +576,22 @@ async function loadRoadTemplate() {
         else if (mergeFn) { try { merged = mergeFn(geos, true); } catch (e) { merged = null; } }
         if (!merged) { merged = geos[0]; mats.length = 1; }
 
-        // <<< Scale la géométrie pour qu'elle couvre bien la distance entre instances
         merged.scale(WORLD_SCALE, WORLD_SCALE, WORLD_SCALE);
 
         roadGeo = merged;
         roadMats = mats;
-        // segLen et segWidth reflètent la taille EFFECTIVE en coordonnées 3D
         roadInfo = { segLen: segLenRaw * WORLD_SCALE, segWidth: segWidthRaw * WORLD_SCALE };
 
-        console.log('Route PSX prête (instanciée) : segment', roadInfo.segLen.toFixed(1), 'm x', roadInfo.segWidth.toFixed(1), 'm (WORLD_SCALE=' + WORLD_SCALE + ')');
+        console.log('Route PSX prête :', roadInfo.segLen.toFixed(1), 'm x', roadInfo.segWidth.toFixed(1), 'm (WORLD_SCALE=' + WORLD_SCALE + ')');
     } catch (e) {
         console.warn('Modèle de route introuvable (' + ROAD_MODEL_URL + ') → routes en ruban.', e);
-        roadInfo = null;
-        roadGeo = null;
-        roadMats = [];
+        roadInfo = null; roadGeo = null; roadMats = [];
     }
 }
 
-// --- Herbe PSX ---
 async function makeGrassTexture() {
     const loader = new THREE.TextureLoader();
     loader.setCrossOrigin('anonymous');
-
     for (const url of GRASS_URLS) {
         try {
             const tex = await loader.loadAsync(url);
@@ -474,8 +603,6 @@ async function makeGrassTexture() {
             t.magFilter = THREE.NearestFilter;
             t.minFilter = THREE.NearestFilter;
             t.wrapS = t.wrapT = THREE.RepeatWrapping;
-            // Même nombre de tuiles, mais réparties sur WORLD_CHUNK_SIZE
-            // → tuiles 2× plus grandes visuellement (cohérent avec l'agrandissement)
             t.repeat.set(CHUNK_SIZE / GRASS_TILE_SIZE, CHUNK_SIZE / GRASS_TILE_SIZE);
             if ('colorSpace' in t) t.colorSpace = THREE.SRGBColorSpace;
             console.log('Herbe PSX chargée :', url);
@@ -484,45 +611,45 @@ async function makeGrassTexture() {
             console.warn('Échec texture herbe :', url);
         }
     }
-
     const c = document.createElement('canvas');
     c.width = 64; c.height = 64;
     const ctx = c.getContext('2d');
     const shades = ['#5a7a3a', '#618243', '#557336', '#6a8c4a', '#4e6a30', '#527034'];
-    for (let y = 0; y < 64; y++) {
-        for (let x = 0; x < 64; x++) {
-            ctx.fillStyle = shades[(Math.random() * shades.length) | 0];
-            ctx.fillRect(x, y, 1, 1);
-        }
+    for (let y = 0; y < 64; y++) for (let x = 0; x < 64; x++) {
+        ctx.fillStyle = shades[(Math.random() * shades.length) | 0];
+        ctx.fillRect(x, y, 1, 1);
     }
     const t = new THREE.CanvasTexture(c);
     t.magFilter = THREE.NearestFilter;
     t.minFilter = THREE.NearestFilter;
     t.wrapS = t.wrapT = THREE.RepeatWrapping;
     t.repeat.set(CHUNK_SIZE / GRASS_TILE_SIZE, CHUNK_SIZE / GRASS_TILE_SIZE);
-    console.log('Herbe PSX procédurale générée.');
     return t;
 }
 
-// --- Physique + véhicule ---
 async function initPhysics() {
     await RAPIER.init();
     physicsWorld = new RAPIER.World({ x: 0.0, y: -9.81, z: 0.0 });
 
-    // Sol suffisamment grand pour le monde agrandi
     const groundHalfSize = 10000 * WORLD_SCALE;
     physicsWorld.createCollider(RAPIER.ColliderDesc.cuboid(groundHalfSize, 0.1, groundHalfSize));
 
     const chassisDesc = RAPIER.RigidBodyDesc.dynamic()
-        .setTranslation(0, 2.0, 0)
+        .setTranslation(0, 1.2, 0)
         .setLinearDamping(0.05)
         .setAngularDamping(1.0);
     chassisBody = physicsWorld.createRigidBody(chassisDesc);
 
     physicsWorld.createCollider(
-        RAPIER.ColliderDesc.cuboid(0.85, 0.5, CAR_LENGTH / 2 * 0.95)
-            .setMass(CAR_MASS)
+        RAPIER.ColliderDesc.cuboid(0.95, 0.6, CAR_LENGTH / 2 * 0.95)
+            .setMass(CAR_MASS * 0.55)
             .setFriction(0.5),
+        chassisBody
+    );
+    physicsWorld.createCollider(
+        RAPIER.ColliderDesc.cuboid(0.8, 0.2, CAR_LENGTH / 2 * 0.8)
+            .setMass(CAR_MASS * 0.45)
+            .setTranslation(0, -0.4, 0),
         chassisBody
     );
 
@@ -537,9 +664,9 @@ async function initPhysics() {
     wheelPositions.forEach(pos => {
         vehicleController.addWheel(pos, { x: 0, y: -1, z: 0 }, { x: -1, y: 0, z: 0 }, SUSPENSION_REST, WHEEL_RADIUS);
         const idx = vehicleController.numWheels() - 1;
-        vehicleController.setWheelSuspensionStiffness(idx, SUSPENSION_STIFFNESS * MS);
-        vehicleController.setWheelSuspensionCompression(idx, SUSPENSION_COMPRESSION * MS);
-        vehicleController.setWheelSuspensionRelaxation(idx, SUSPENSION_RELAXATION * MS);
+        vehicleController.setWheelSuspensionStiffness(idx, SUSPENSION_STIFFNESS);
+        vehicleController.setWheelSuspensionCompression(idx, SUSPENSION_COMPRESSION);
+        vehicleController.setWheelSuspensionRelaxation(idx, SUSPENSION_RELAXATION);
         vehicleController.setWheelMaxSuspensionTravel(idx, SUSPENSION_MAX_TRAVEL);
         vehicleController.setWheelFrictionSlip(idx, GRIP * MS);
     });
@@ -560,35 +687,25 @@ async function initPhysics() {
     buildCarVisual();
 }
 
-// --- Supprime les copies superposées ---
 function dedupeCoincident(root) {
     const seen = [];
     const maxDim = new THREE.Box3().setFromObject(root).getSize(new THREE.Vector3()).length();
     const eps = Math.max(maxDim * 0.001, 1e-4);
-
     for (const child of [...root.children]) {
         let hasMesh = false;
         child.traverse(o => { if (o.isMesh) hasMesh = true; });
         if (!hasMesh) continue;
-
         const b = new THREE.Box3().setFromObject(child);
         const c = b.getCenter(new THREE.Vector3());
         const s = b.getSize(new THREE.Vector3());
-
         const dup = seen.find(e =>
             Math.abs(e.c.x - c.x) < eps && Math.abs(e.c.y - c.y) < eps && Math.abs(e.c.z - c.z) < eps &&
             Math.abs(e.s.x - s.x) < eps && Math.abs(e.s.y - s.y) < eps && Math.abs(e.s.z - s.z) < eps);
-
-        if (dup) {
-            console.warn('Doublon superposé détecté et supprimé :', child.name || child.uuid);
-            root.remove(child);
-        } else {
-            seen.push({ c, s });
-        }
+        if (dup) root.remove(child);
+        else seen.push({ c, s });
     }
 }
 
-// --- Détection du plan de symétrie ---
 function detectSeam(object, axis, box) {
     const size = box.getSize(new THREE.Vector3());
     const eps = Math.max(size[axis] * 0.02, 1e-4);
@@ -597,27 +714,23 @@ function detectSeam(object, axis, box) {
         max: { bound: 0, plane: 0, ymin: Infinity, ymax: -Infinity }
     };
     const v = new THREE.Vector3();
-
     const record = (side, isBound, y) => {
         const s = stats[side];
         if (isBound) s.bound++; else s.plane++;
         if (y < s.ymin) s.ymin = y;
         if (y > s.ymax) s.ymax = y;
     };
-
     object.traverse(o => {
         if (!o.isMesh || !o.geometry) return;
         const geo = o.geometry;
         const posAttr = geo.attributes.position;
         if (!posAttr) return;
         o.updateWorldMatrix(true, false);
-
         for (let i = 0; i < posAttr.count; i++) {
             v.fromBufferAttribute(posAttr, i).applyMatrix4(o.matrixWorld);
             if (Math.abs(v[axis] - box.min[axis]) < eps) record('min', false, v.y);
             else if (Math.abs(v[axis] - box.max[axis]) < eps) record('max', false, v.y);
         }
-
         const edgeCount = new Map();
         const addEdge = (a, b) => {
             const k = a < b ? a * 100000 + b : b * 100000 + a;
@@ -636,10 +749,7 @@ function detectSeam(object, axis, box) {
         }
         const boundary = new Set();
         edgeCount.forEach((c, k) => {
-            if (c === 1) {
-                boundary.add(Math.floor(k / 100000));
-                boundary.add(k % 100000);
-            }
+            if (c === 1) { boundary.add(Math.floor(k / 100000)); boundary.add(k % 100000); }
         });
         boundary.forEach(vi => {
             v.fromBufferAttribute(posAttr, vi).applyMatrix4(o.matrixWorld);
@@ -647,25 +757,17 @@ function detectSeam(object, axis, box) {
             else if (Math.abs(v[axis] - box.max[axis]) < eps) record('max', true, v.y);
         });
     });
-
     const span = s => (s.ymax > s.ymin ? s.ymax - s.ymin : 0);
-    if (stats.min.bound + stats.max.bound > 0) {
-        return span(stats.min) >= span(stats.max) ? box.min[axis] : box.max[axis];
-    }
-    if (stats.min.plane + stats.max.plane > 0) {
-        return span(stats.min) >= span(stats.max) ? box.min[axis] : box.max[axis];
-    }
+    if (stats.min.bound + stats.max.bound > 0) return span(stats.min) >= span(stats.max) ? box.min[axis] : box.max[axis];
+    if (stats.min.plane + stats.max.plane > 0) return span(stats.min) >= span(stats.max) ? box.min[axis] : box.max[axis];
     return box.max[axis];
 }
 
-// --- Inverse le sens des triangles ---
 function flipWinding(geo) {
     if (geo.index) {
         const arr = geo.index.array;
         for (let i = 0; i < arr.length; i += 3) {
-            const t = arr[i + 1];
-            arr[i + 1] = arr[i + 2];
-            arr[i + 2] = t;
+            const t = arr[i + 1]; arr[i + 1] = arr[i + 2]; arr[i + 2] = t;
         }
         geo.index.needsUpdate = true;
     } else {
@@ -685,21 +787,17 @@ function flipWinding(geo) {
     }
 }
 
-// --- Copie de wheel.glb ---
 function prepareWheelClone(wheelRoot) {
     const w = wheelRoot.clone(true);
-
     let box = new THREE.Box3().setFromObject(w);
     let size = box.getSize(new THREE.Vector3());
     if (size.y <= size.x && size.y <= size.z) w.rotation.z = Math.PI / 2;
     else if (size.z <= size.x && size.z <= size.y) w.rotation.y = Math.PI / 2;
-
     w.updateWorldMatrix(true, true);
     box = new THREE.Box3().setFromObject(w);
     size = box.getSize(new THREE.Vector3());
     const s = (WHEEL_RADIUS * 2) / Math.max(size.y, size.z, 0.001);
     w.scale.multiplyScalar(s);
-
     w.updateWorldMatrix(true, true);
     box = new THREE.Box3().setFromObject(w);
     const c = box.getCenter(new THREE.Vector3());
@@ -707,17 +805,14 @@ function prepareWheelClone(wheelRoot) {
     return w;
 }
 
-// --- Construction du visuel voiture ---
 function buildCarVisual() {
     carGroup = new THREE.Group();
     scene.add(carGroup);
     wheelsVis = [];
-
     let bodyOk = false;
 
     if (masterRoot) {
         masterRoot.updateWorldMatrix(true, true);
-
         const allMeshes = [];
         masterRoot.traverse(o => { if (o.isMesh) allMeshes.push(o); });
         const wheelMeshes = allMeshes.filter(m => /wheel|tire|tyre|roue/i.test(m.name));
@@ -737,20 +832,14 @@ function buildCarVisual() {
         if (MIRROR_CAR) {
             const m0 = 2 * seam - b, m1 = 2 * seam - a;
             const overlap = Math.min(b, m1) - Math.max(a, m0);
-            if (overlap > (b - a) * 0.5) {
-                seam = (seam === a) ? b : a;
-                console.warn('Miroir superposé détecté → bascule sur l\'autre bord.');
-            }
+            if (overlap > (b - a) * 0.5) seam = (seam === a) ? b : a;
         }
 
         const mirrorPlane = new THREE.Matrix4();
         if (MIRROR_CAR) {
             const T1 = new THREE.Matrix4(), S = new THREE.Matrix4(), T2 = new THREE.Matrix4();
-            if (widthAxis === 'x') {
-                T1.makeTranslation(seam, 0, 0); S.makeScale(-1, 1, 1); T2.makeTranslation(-seam, 0, 0);
-            } else {
-                T1.makeTranslation(0, 0, seam); S.makeScale(1, 1, -1); T2.makeTranslation(0, 0, -seam);
-            }
+            if (widthAxis === 'x') { T1.makeTranslation(seam, 0, 0); S.makeScale(-1, 1, 1); T2.makeTranslation(-seam, 0, 0); }
+            else { T1.makeTranslation(0, 0, seam); S.makeScale(1, 1, -1); T2.makeTranslation(0, 0, -seam); }
             mirrorPlane.multiplyMatrices(T1, S).multiply(T2);
         }
 
@@ -761,7 +850,6 @@ function buildCarVisual() {
             gA.applyMatrix4(m.matrixWorld);
             body.add(new THREE.Mesh(gA, m.material));
             bakedCount++;
-
             if (MIRROR_CAR) {
                 const gB = m.geometry.clone();
                 gB.applyMatrix4(new THREE.Matrix4().multiplyMatrices(mirrorPlane, m.matrixWorld));
@@ -770,8 +858,6 @@ function buildCarVisual() {
                 bakedCount++;
             }
         });
-
-        console.log(`Voiture construite : ${bakedCount} meshes cuits | mode=${MIRROR_MODE} | masse=${CAR_MASS}kg`);
 
         const flip = new THREE.Group();
         flip.add(body);
@@ -798,6 +884,10 @@ function buildCarVisual() {
         orient.position.z -= center.z;
         orient.position.y += (-1.05 - box.min.y);
 
+        orient.position.y += CAR_CONFIG.bodyY;
+        orient.rotation.y += CAR_CONFIG.bodyRotY;
+        orient.scale.multiplyScalar(CAR_CONFIG.bodyScale);
+
         carGroup.add(orient);
         carGroup.updateWorldMatrix(true, true);
         bodyOk = true;
@@ -817,7 +907,6 @@ function buildCarVisual() {
                 const pivot = new THREE.Group();
                 pivot.position.set(c.x, 0, c.z);
                 carGroup.add(pivot);
-
                 const g = wheelMeshes[i].geometry.clone();
                 g.applyMatrix4(wheelMeshes[i].matrixWorld);
                 const wm = new THREE.Mesh(g, wheelMeshes[i].material);
@@ -826,7 +915,6 @@ function buildCarVisual() {
                 rel.applyMatrix4(orient.matrixWorld);
                 wm.position.set(-rel.x + c.x, -rel.y, -rel.z + c.z);
                 pivot.add(wm);
-
                 wheelsVis.push({ node: pivot, baseX: c.x, baseZ: c.z, designY: 0, rest0: null });
             }
         }
@@ -842,26 +930,34 @@ function buildCarVisual() {
 
     if (wheelsVis.length === 0) {
         const corners = [
-            { x: -WHEEL_TRACK_X, z: -WHEEL_BASE_Z }, { x: WHEEL_TRACK_X, z: -WHEEL_BASE_Z },
-            { x: -WHEEL_TRACK_X, z: WHEEL_BASE_Z }, { x: WHEEL_TRACK_X, z: WHEEL_BASE_Z }
+            { x: -WHEEL_TRACK_X, z: -WHEEL_BASE_Z },
+            { x: WHEEL_TRACK_X, z: -WHEEL_BASE_Z },
+            { x: -WHEEL_TRACK_X, z: WHEEL_BASE_Z },
+            { x: WHEEL_TRACK_X, z: WHEEL_BASE_Z }
         ];
         if (masterWheel) {
             corners.forEach(p => {
+                const px = p.x + Math.sign(p.x) * CAR_CONFIG.wheelTrack;
+                const pz = p.z + Math.sign(p.z) * CAR_CONFIG.wheelBase;
                 const pivot = new THREE.Group();
-                pivot.position.set(p.x, -SUSPENSION_REST, p.z);
+                pivot.position.set(px, -SUSPENSION_REST + CAR_CONFIG.wheelY, pz);
+                pivot.scale.setScalar(CAR_CONFIG.wheelScale);
                 pivot.add(prepareWheelClone(masterWheel));
                 carGroup.add(pivot);
-                wheelsVis.push({ node: pivot, baseX: p.x, baseZ: p.z, designY: -SUSPENSION_REST, rest0: null });
+                wheelsVis.push({ node: pivot, baseX: px, baseZ: pz, designY: -SUSPENSION_REST + CAR_CONFIG.wheelY, rest0: null });
             });
         } else {
             const wheelGeo = new THREE.CylinderGeometry(WHEEL_RADIUS, WHEEL_RADIUS, WHEEL_WIDTH, 16);
             wheelGeo.rotateZ(Math.PI / 2);
             const wheelMat = new THREE.MeshStandardMaterial({ color: 0x111111 });
             corners.forEach(p => {
+                const px = p.x + Math.sign(p.x) * CAR_CONFIG.wheelTrack;
+                const pz = p.z + Math.sign(p.z) * CAR_CONFIG.wheelBase;
                 const w = new THREE.Mesh(wheelGeo, wheelMat);
-                w.position.set(p.x, -SUSPENSION_REST, p.z);
+                w.position.set(px, -SUSPENSION_REST + CAR_CONFIG.wheelY, pz);
+                w.scale.setScalar(CAR_CONFIG.wheelScale);
                 carGroup.add(w);
-                wheelsVis.push({ node: w, baseX: p.x, baseZ: p.z, designY: -SUSPENSION_REST, rest0: null });
+                wheelsVis.push({ node: w, baseX: px, baseZ: pz, designY: -SUSPENSION_REST + CAR_CONFIG.wheelY, rest0: null });
             });
         }
     }
@@ -873,7 +969,6 @@ function rebuildCar() {
     buildCarVisual();
 }
 
-// --- Conversions GPS <-> 3D (nord = -Z, scalées par WORLD_SCALE) ---
 function latLonToVector3(lat, lon) {
     const x = (lon - baseLon) * (Math.PI / 180) * EARTH_RADIUS * Math.cos(baseLat * Math.PI / 180);
     const z = -(lat - baseLat) * (Math.PI / 180) * EARTH_RADIUS;
@@ -881,18 +976,15 @@ function latLonToVector3(lat, lon) {
 }
 
 function vector3ToLatLon(x, z) {
-    // Inverse : on divise par WORLD_SCALE pour retrouver les vraies coordonnées GPS
     const lat = baseLat + (-(z / WORLD_SCALE) / EARTH_RADIUS) * (180 / Math.PI);
     const lon = baseLon + ((x / WORLD_SCALE) / (EARTH_RADIUS * Math.cos(baseLat * Math.PI / 180))) * (180 / Math.PI);
     return { lat, lon };
 }
 
-// --- Collecte des transforms de segments ---
 function collectRoadInstances(polyline, width, out) {
     const step = roadInfo.segLen * 0.95;
     const total = polylineLength(polyline);
     const scaleX = THREE.MathUtils.clamp(width / roadInfo.segWidth, 0.7, 1.8);
-
     for (let s = step / 2; s < total; s += step) {
         const sample = samplePolyline(polyline, s);
         if (!sample) continue;
@@ -905,31 +997,25 @@ function collectRoadInstances(polyline, width, out) {
     }
 }
 
-// --- Chunks ---
 function updateChunks() {
     if (!hasStarted) return;
-
     const carPos = chassisBody ? chassisBody.translation() : { x: 0, z: 0 };
-    // Grille en coordonnées 3D scalées
     const camX = Math.floor(carPos.x / WORLD_CHUNK_SIZE);
     const camZ = Math.floor(carPos.z / WORLD_CHUNK_SIZE);
-
     for (const [key, chunk] of loadedChunks) {
         const dx = Math.abs(chunk.gridX - camX);
         const dz = Math.abs(chunk.gridZ - camZ);
         if (dx > RENDER_DISTANCE + 1 || dz > RENDER_DISTANCE + 1) {
             scene.remove(chunk.group);
             chunk.group.traverse(obj => {
-                if (obj.isInstancedMesh) {
-                    obj.dispose();
-                } else if (obj.geometry && !obj.userData.shared) {
-                    obj.geometry.dispose();
-                }
+                if (obj.isInstancedMesh) obj.dispose();
+                else if (obj.geometry && !obj.userData.shared) obj.geometry.dispose();
+                if (obj.material?.map?.dispose) obj.material.map.dispose();
+                if (obj.material?.dispose) obj.material.dispose();
             });
             loadedChunks.delete(key);
         }
     }
-
     for (let x = camX - RENDER_DISTANCE; x <= camX + RENDER_DISTANCE; x++) {
         for (let z = camZ - RENDER_DISTANCE; z <= camZ + RENDER_DISTANCE; z++) {
             const key = `${x}_${z}`;
@@ -938,8 +1024,12 @@ function updateChunks() {
             }
         }
     }
-
-    if (chunkQueue.length > 0 && chunksLoading.size < 1) {
+    chunkQueue.sort((a, b) => {
+        const da = Math.max(Math.abs(a.gridX - camX), Math.abs(a.gridZ - camZ));
+        const db = Math.max(Math.abs(b.gridX - camX), Math.abs(b.gridZ - camZ));
+        return da - db;
+    });
+    while (chunkQueue.length > 0 && chunksLoading.size < 3) {
         loadChunk(chunkQueue.shift());
     }
 }
@@ -947,24 +1037,18 @@ function updateChunks() {
 async function loadChunk(chunkInfo) {
     const { key, gridX, gridZ } = chunkInfo;
     chunksLoading.add(key);
-
-    // Position 3D du centre du chunk (scalée)
     const worldX = gridX * WORLD_CHUNK_SIZE;
     const worldZ = gridZ * WORLD_CHUNK_SIZE;
-    // vector3ToLatLon divise par WORLD_SCALE → retrouve la vraie position GPS
     const center = vector3ToLatLon(worldX, worldZ);
-
     try {
-        // On demande toujours size=CHUNK_SIZE au backend (en mètres réels)
         const response = await fetch(`http://localhost:3001/api/chunk?lat=${center.lat}&lon=${center.lon}&size=${CHUNK_SIZE}`);
         const data = await response.json();
         if (!response.ok) throw new Error(data.error);
-
         const group = new THREE.Group();
         group.position.set(worldX, 0, worldZ);
         const offsetVec = latLonToVector3(center.lat, center.lon);
 
-        // Terrain : couvre WORLD_CHUNK_SIZE en 3D
+        // 1) Terrain (herbe)
         const terrainGeo = new THREE.PlaneGeometry(WORLD_CHUNK_SIZE, WORLD_CHUNK_SIZE, 1, 1);
         terrainGeo.rotateX(-Math.PI / 2);
         const terrainMat = grassTexture
@@ -972,57 +1056,77 @@ async function loadChunk(chunkInfo) {
             : new THREE.MeshStandardMaterial({ color: 0x7A8C4E });
         group.add(new THREE.Mesh(terrainGeo, terrainMat));
 
+        // 2) Préparation des polylines (locales au chunk, déjà clippées)
+        const roadEntries = []; // { polyline, width, isHighway }
         const roadMat = new THREE.MeshStandardMaterial({
             color: 0x2C2C34, roughness: 0.8,
             polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1
         });
-
         const instances = [];
+
         data.roads.forEach(r => {
             if (r.geometry.length < 2) return;
-            // Les points GPS sont convertis en coordonnées 3D scalées
-            const points3D = r.geometry.map(p => {
-                const v = latLonToVector3(p.lat, p.lon);
-                v.y = 0;
-                return v;
-            });
-            // Passage en coordonnées locales du chunk (toujours scalées, donc cohérentes)
+            const points3D = r.geometry.map(p => { const v = latLonToVector3(p.lat, p.lon); v.y = 0; return v; });
             const localPts = points3D.map(p => new THREE.Vector3(p.x - offsetVec.x, p.y, p.z - offsetVec.z));
-            // getRoadWidth retourne déjà ×WORLD_SCALE
             const width = getRoadWidth(r.tags);
-
+            const tags = r.tags || {};
+            const isHighway = tags.highway === 'motorway' || tags.highway === 'trunk' || tags.highway === 'primary';
             splitRoadIntoChunkPolylines(localPts).forEach(polyline => {
-                if (roadInfo && roadGeo) {
-                    collectRoadInstances(polyline, width, instances);
+                if (ROAD_STYLE === 'flat') {
+                    roadEntries.push({ polyline, width, isHighway });
                 } else {
-                    const mesh = createRoadMesh(polyline, width, roadMat);
-                    if (mesh) group.add(mesh);
+                    if (roadInfo && roadGeo) collectRoadInstances(polyline, width, instances);
+                    else {
+                        const mesh = createRoadMesh(polyline, width, roadMat);
+                        if (mesh) group.add(mesh);
+                    }
                 }
             });
         });
 
-        if (instances.length > 0) {
-            const mat = roadMats.length === 1 ? roadMats[0] : roadMats;
-            const im = new THREE.InstancedMesh(roadGeo, mat, instances.length);
-            const M = new THREE.Matrix4();
-            const Q = new THREE.Quaternion();
-            const P = new THREE.Vector3();
-            const S = new THREE.Vector3();
-            const UP = new THREE.Vector3(0, 1, 0);
+        // 3) ROUTES PROCÉDURALES : un seul canvas par chunk = zéro artefact
+        if (ROAD_STYLE === 'flat') {
+            if (roadEntries.length > 0) {
+                const roadCanvas = createRoadCanvas(roadEntries);
+                const roadTexture = new THREE.CanvasTexture(roadCanvas);
+                roadTexture.magFilter = THREE.NearestFilter;
+                roadTexture.minFilter = THREE.LinearFilter;
+                if ('colorSpace' in roadTexture) roadTexture.colorSpace = THREE.SRGBColorSpace;
 
-            // Hauteur des routes scalée pour rester au-dessus du terrain
-            const roadY = 0.15 * WORLD_SCALE;
-
-            instances.forEach((inst, i) => {
-                Q.setFromAxisAngle(UP, inst.yaw);
-                P.set(inst.x, roadY, inst.z);
-                S.set(inst.scaleX, 1, 1);
-                M.compose(P, Q, S);
-                im.setMatrixAt(i, M);
-            });
-            im.instanceMatrix.needsUpdate = true;
-            im.frustumCulled = false;
-            group.add(im);
+                const roadGeoFlat = new THREE.PlaneGeometry(WORLD_CHUNK_SIZE, WORLD_CHUNK_SIZE, 1, 1);
+                roadGeoFlat.rotateX(-Math.PI / 2);
+                const roadMatFlat = new THREE.MeshStandardMaterial({
+                    map: roadTexture,
+                    transparent: true,
+                    roughness: 0.85,
+                    metalness: 0.0,
+                    polygonOffset: true,
+                    polygonOffsetFactor: -2,
+                    polygonOffsetUnits: -2,
+                });
+                const roadMesh = new THREE.Mesh(roadGeoFlat, roadMatFlat);
+                roadMesh.position.y = 0.05; // juste au-dessus du terrain
+                roadMesh.renderOrder = 1;
+                group.add(roadMesh);
+            }
+        } else {
+            // Mode segments 3D (ancien comportement)
+            if (instances.length > 0) {
+                const mat = roadMats.length === 1 ? roadMats[0] : roadMats;
+                const im = new THREE.InstancedMesh(roadGeo, mat, instances.length);
+                const M = new THREE.Matrix4(), Q = new THREE.Quaternion(), P = new THREE.Vector3(), S = new THREE.Vector3(), UP = new THREE.Vector3(0, 1, 0);
+                const roadY = 0.15 * WORLD_SCALE;
+                instances.forEach((inst, i) => {
+                    Q.setFromAxisAngle(UP, inst.yaw);
+                    P.set(inst.x, roadY, inst.z);
+                    S.set(inst.scaleX, 1, 1);
+                    M.compose(P, Q, S);
+                    im.setMatrixAt(i, M);
+                });
+                im.instanceMatrix.needsUpdate = true;
+                im.frustumCulled = false;
+                group.add(im);
+            }
         }
 
         scene.add(group);
@@ -1035,43 +1139,35 @@ async function loadChunk(chunkInfo) {
     }
 }
 
-// --- Géocodage ---
 async function searchAddress() {
     const input = document.getElementById('address-input');
     const address = input.value.trim();
     if (!address) return;
-
     try {
         const response = await fetch(`http://localhost:3001/api/geocode?q=${encodeURIComponent(address)}`);
         const data = await response.json();
         if (response.ok) {
-            baseLat = data.lat;
-            baseLon = data.lon;
-            hasStarted = true;
-
+            baseLat = data.lat; baseLon = data.lon; hasStarted = true;
             loadedChunks.forEach(c => scene.remove(c.group));
             loadedChunks.clear();
             chunkQueue.length = 0;
-
             if (chassisBody) {
-                chassisBody.setTranslation({ x: 0, y: 2.0, z: 0 }, true);
+                chassisBody.setTranslation({ x: 0, y: 1.2, z: 0 }, true);
                 chassisBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
                 chassisBody.setAngvel({ x: 0, y: 0, z: 0 }, true);
                 chassisBody.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
             }
             if (minimap) minimap.setView([baseLat, baseLon], 16, { animate: false });
             updateChunks();
-        } else {
-            alert("Adresse introuvable.");
-        }
-    } catch (error) {
-        alert("Erreur de connexion au backend.");
-    }
+        } else alert("Adresse introuvable.");
+    } catch (error) { alert("Erreur de connexion au backend."); }
 }
 
-// --- Contrôles ---
 function setupControls() {
     window.addEventListener('keydown', (e) => {
+        if (e.target && e.target.tagName === 'INPUT') return;
+        if (handleEditorKey(e)) return;
+
         if (e.code === 'KeyW' || e.code === 'ArrowUp') keys.up = true;
         if (e.code === 'KeyS' || e.code === 'ArrowDown') keys.down = true;
         if (e.code === 'KeyA' || e.code === 'ArrowLeft') keys.left = true;
@@ -1079,12 +1175,9 @@ function setupControls() {
         if (e.code === 'Space') keys.brake = true;
 
         if (e.code === 'KeyM' && masterRoot) {
-            const isInput = document.activeElement && document.activeElement.tagName === 'INPUT';
-            if (!isInput) {
-                MIRROR_MODE = MIRROR_MODE === 'auto' ? 'min' : (MIRROR_MODE === 'min' ? 'max' : 'auto');
-                console.log('Mode miroir :', MIRROR_MODE);
-                rebuildCar();
-            }
+            MIRROR_MODE = MIRROR_MODE === 'auto' ? 'min' : (MIRROR_MODE === 'min' ? 'max' : 'auto');
+            console.log('Mode miroir :', MIRROR_MODE);
+            rebuildCar();
         }
     });
     window.addEventListener('keyup', (e) => {
@@ -1097,14 +1190,10 @@ function setupControls() {
 
     const canvas = renderer.domElement;
     canvas.style.touchAction = 'none';
-    canvas.addEventListener('pointerdown', (e) => {
-        dragging = true;
-        lastPX = e.clientX; lastPY = e.clientY;
-    });
+    canvas.addEventListener('pointerdown', (e) => { dragging = true; lastPX = e.clientX; lastPY = e.clientY; });
     window.addEventListener('pointermove', (e) => {
         if (!dragging) return;
-        const dx = e.clientX - lastPX;
-        const dy = e.clientY - lastPY;
+        const dx = e.clientX - lastPX, dy = e.clientY - lastPY;
         lastPX = e.clientX; lastPY = e.clientY;
         camYawOffset -= dx * 0.005;
         camPitch = THREE.MathUtils.clamp(camPitch + dy * 0.005, 0.05, 1.3);
@@ -1115,12 +1204,9 @@ function setupControls() {
     }, { passive: true });
 
     document.getElementById('search-btn').addEventListener('click', searchAddress);
-    document.getElementById('address-input').addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') searchAddress();
-    });
+    document.getElementById('address-input').addEventListener('keypress', (e) => { if (e.key === 'Enter') searchAddress(); });
 }
 
-// --- Conduite type Need for Speed ---
 function updateCarControl(dt) {
     const vel = chassisBody.linvel();
     _fwd.set(0, 0, -1).applyQuaternion(carGroup.quaternion);
@@ -1128,33 +1214,32 @@ function updateCarControl(dt) {
     const absSpeed = Math.abs(speed);
 
     let targetEngine = 0;
-    if (keys.up) {
-        targetEngine = -ENGINE_FORCE * Math.max(0, 1 - Math.max(speed, 0) / MAX_SPEED);
-    } else if (keys.down) {
-        targetEngine = REVERSE_FORCE * Math.max(0, 1 - Math.max(-speed, 0) / MAX_REVERSE_SPEED);
-    }
+    if (keys.up) targetEngine = -ENGINE_FORCE * Math.max(0, 1 - Math.max(speed, 0) / MAX_SPEED);
+    else if (keys.down) targetEngine = REVERSE_FORCE * Math.max(0, 1 - Math.max(-speed, 0) / MAX_REVERSE_SPEED);
     currentEngine = THREE.MathUtils.damp(currentEngine, targetEngine, THROTTLE_SMOOTH, dt);
 
     const targetBrake = keys.brake ? BRAKE_FORCE : 0;
     currentBrake = THREE.MathUtils.damp(currentBrake, targetBrake, BRAKE_SMOOTH, dt);
 
     const speedFactor = THREE.MathUtils.clamp(absSpeed / STEER_FADE_SPEED, 0, 1);
-    const maxSteer = THREE.MathUtils.lerp(STEER_MAX_LOW, STEER_MAX_HIGH, speedFactor);
+    let maxSteer = THREE.MathUtils.lerp(STEER_MAX_LOW, STEER_MAX_HIGH, speedFactor);
+    const steerGate = THREE.MathUtils.clamp(absSpeed / 0.5, 0, 1);
+    maxSteer *= steerGate;
     let targetSteer = 0;
     if (keys.left) targetSteer = maxSteer;
     else if (keys.right) targetSteer = -maxSteer;
     const lambda = targetSteer !== 0 ? STEER_SMOOTH : STEER_CENTER;
     currentSteer = THREE.MathUtils.damp(currentSteer, targetSteer, lambda, dt);
 
+    const motorForce = currentEngine * MS * 0.7;
     for (let i = 0; i < 4; i++) {
-        vehicleController.setWheelEngineForce(i, i >= 2 ? currentEngine * MS : 0);
+        vehicleController.setWheelEngineForce(i, motorForce);
         vehicleController.setWheelBrake(i, currentBrake * MS);
     }
     vehicleController.setWheelSteering(0, currentSteer);
     vehicleController.setWheelSteering(1, currentSteer);
 }
 
-// --- Sync roues ---
 const _steerQuat = new THREE.Quaternion();
 const _rollQuat = new THREE.Quaternion();
 const _up = new THREE.Vector3(0, 1, 0);
@@ -1163,57 +1248,42 @@ function updateWheelsVisual() {
     for (let i = 0; i < 4; i++) {
         const w = wheelsVis[i];
         if (!w) continue;
-
         const suspension = vehicleController.wheelSuspensionLength(i) || 0;
         const steering = vehicleController.wheelSteering(i) || 0;
         const rotationRad = vehicleController.wheelRotation(i) || 0;
         const axleCs = vehicleController.wheelAxleCs(i);
-
         if (w.rest0 === null && suspension > 0.01) w.rest0 = suspension;
         const rest0 = w.rest0 !== null ? w.rest0 : SUSPENSION_REST;
-
         w.node.position.x = w.baseX;
         w.node.position.z = w.baseZ;
         w.node.position.y = w.designY + (rest0 - suspension);
-
         _steerQuat.setFromAxisAngle(_up, steering);
         _rollQuat.setFromAxisAngle(new THREE.Vector3(axleCs.x, axleCs.y, axleCs.z), rotationRad);
         w.node.quaternion.multiplyQuaternions(_steerQuat, _rollQuat);
     }
 }
 
-// --- Caméra orbitale ---
-const _behind = new THREE.Vector3();
-const _camTarget = new THREE.Vector3();
-const _camOffset = new THREE.Vector3();
+const _behind = new THREE.Vector3(), _camTarget = new THREE.Vector3(), _camOffset = new THREE.Vector3();
 const _Y = new THREE.Vector3(0, 1, 0);
 
 function updateVehicleAndCamera() {
     if (!vehicleController || !chassisBody || !carGroup) return;
-
     const dt = 1 / 60;
     updateCarControl(dt);
     vehicleController.updateVehicle(dt);
-
-    const pos = chassisBody.translation();
-    const rot = chassisBody.rotation();
+    const pos = chassisBody.translation(), rot = chassisBody.rotation();
     carGroup.position.set(pos.x, pos.y, pos.z);
     carGroup.quaternion.set(rot.x, rot.y, rot.z, rot.w);
-
     updateWheelsVisual();
-
     _behind.set(0, 0, 1).applyQuaternion(carGroup.quaternion);
     _behind.y = 0;
     if (_behind.lengthSq() < 0.0001) _behind.set(0, 0, 1);
     _behind.normalize();
     _behind.applyAxisAngle(_Y, camYawOffset);
-
     _camTarget.copy(carGroup.position);
     _camTarget.y += 1.0;
-
     _camOffset.copy(_behind).multiplyScalar(Math.cos(camPitch) * camDist);
     _camOffset.y = Math.sin(camPitch) * camDist;
-
     camera.position.lerp(_camTarget.clone().add(_camOffset), 0.25);
     camera.lookAt(_camTarget);
 }
@@ -1227,34 +1297,28 @@ function onWindowResize() {
 
 function animate() {
     requestAnimationFrame(animate);
-
     if (physicsWorld) physicsWorld.step();
     updateVehicleAndCamera();
     if (sky) sky.position.copy(camera.position);
     updateChunks();
-
     if (minimap && hasStarted && minimapContainer && chassisBody) {
         const pos = chassisBody.translation();
-        // vector3ToLatLon divise par WORLD_SCALE → vraie position GPS
         const { lat, lon } = vector3ToLatLon(pos.x, pos.z);
         minimap.setView([lat, lon], minimap.getZoom(), { animate: false });
-
         const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(carGroup.quaternion);
         const headingDeg = Math.atan2(forward.x, -forward.z) * (180 / Math.PI);
         minimapContainer.style.transform = `translate(-50%, -50%) rotate(${-headingDeg}deg)`;
     }
-
     composer.render();
 }
 
 async function main() {
     initThree();
     initMinimap();
-
     grassTexture = await makeGrassTexture();
     await loadRoadTemplate();
-
     await initPhysics();
+    initEditorHUD();
     setupControls();
     animate();
 }
