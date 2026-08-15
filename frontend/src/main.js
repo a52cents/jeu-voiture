@@ -1058,7 +1058,8 @@ async function loadChunk(chunkInfo) {
     const worldX = gridX * WORLD_CHUNK_SIZE, worldZ = gridZ * WORLD_CHUNK_SIZE;
     const center = vector3ToLatLon(worldX, worldZ);
     try {
-        const response = await fetch(`http://localhost:3001/api/chunk?lat=${center.lat}&lon=${center.lon}&size=${CHUNK_SIZE}`);
+       const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+        const response = await fetch(`${API_URL}/api/chunk?lat=${center.lat}&lon=${center.lon}&size=${CHUNK_SIZE}`);
         const data = await response.json();
         if (!response.ok) throw new Error(data.error);
         const group = new THREE.Group();

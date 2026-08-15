@@ -99,7 +99,8 @@ async function doSearch() {
     const q = document.getElementById('start-search-input').value.trim();
     if (!q) return;
     try {
-        const r = await fetch(`http://localhost:3001/api/geocode?q=${encodeURIComponent(q)}`);
+       const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+const r = await fetch(`${API_URL}/api/geocode?q=${encodeURIComponent(q)}`);
         const d = await r.json();
         if (r.ok) { map.setView([d.lat, d.lon], 16); setPoint(d.lat, d.lon); }
         else alert('Adresse introuvable');
