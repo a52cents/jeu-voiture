@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@dimforge/rapier3d-compat": "^0.20.0",
+    "firebase": "^12.17.1",
     "postprocessing": "^6.39.4",
     "three": "^0.185.1"
   }
