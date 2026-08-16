@@ -2,7 +2,7 @@
 import { initializeApp } from 'firebase/app';
 import {
     getFirestore, collection, addDoc, getDoc, getDocs, doc, query,
-    orderBy, limit, where, serverTimestamp
+    orderBy, limit, where, serverTimestamp, updateDoc
 } from 'firebase/firestore';
 
 const firebaseConfig = {
@@ -28,6 +28,8 @@ export async function saveCircuit({ nom = 'Circuit sans nom', data }) {
     const ref = await addDoc(collection(db, 'circuits'), {
         nom,
         data,           // { baseLat, baseLon, start, checkpoints, finish }
+        best_temps_ms: null,   // denormalisé : meilleur temps (mis à jour par saveGhost)
+        best_pseudo: null,
         created_at: serverTimestamp()
     });
     return ref.id;
@@ -48,11 +50,31 @@ export async function getCircuit(id) {
     }
 }
 
+/**
+ * Liste des circuits (écran d'accueil), du plus récent au plus ancien.
+ * Retourne [{ id, nom, data, best_temps_ms, best_pseudo, created_at }, ...]
+ */
+export async function getAllCircuits(n = 50) {
+    try {
+        const q = query(
+            collection(db, 'circuits'),
+            orderBy('created_at', 'desc'),
+            limit(n)
+        );
+        const snap = await getDocs(q);
+        return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    } catch (e) {
+        console.error('getAllCircuits erreur', e);
+        return [];
+    }
+}
+
 // ============ GHOSTS ============
 
 /**
  * Sauvegarde un ghost (trajectoire) pour un circuit.
  * trajectoire = [{t, x, y, z, qx, qy, qz, qw}, ...]  (t en ms)
+ * Met aussi à jour le meilleur temps denormalisé sur le circuit.
  */
 export async function saveGhost({ circuitId, pseudo, tempsMs, trajectoire }) {
     if (!circuitId || !pseudo || !Number.isFinite(tempsMs) || !Array.isArray(trajectoire)) {
@@ -65,6 +87,24 @@ export async function saveGhost({ circuitId, pseudo, tempsMs, trajectoire }) {
         trajectoire,
         created_at: serverTimestamp()
     });
+
+    // Denormalisation : meilleur temps sur le circuit (pour la liste d'accueil)
+    try {
+        const circuitRef = doc(db, 'circuits', circuitId);
+        const circuitSnap = await getDoc(circuitRef);
+        if (circuitSnap.exists()) {
+            const cur = circuitSnap.data().best_temps_ms;
+            if (cur == null || Math.round(tempsMs) < cur) {
+                await updateDoc(circuitRef, {
+                    best_temps_ms: Math.round(tempsMs),
+                    best_pseudo: pseudo.slice(0, 20)
+                });
+            }
+        }
+    } catch (e) {
+        console.warn('Mise à jour best_temps_ms ignorée', e);
+    }
+
     return ref.id;
 }
 
@@ -87,6 +127,29 @@ export async function getBestGhost(circuitId) {
         return { id: d.id, ...d.data() };
     } catch (e) {
         console.error('getBestGhost erreur', e);
+        return null;
+    }
+}
+
+/**
+ * Meilleur temps d'un circuit SANS la trajectoire (léger, pour la liste).
+ * Retourne { pseudo, temps_ms } ou null.
+ */
+export async function getBestTime(circuitId) {
+    if (!circuitId) return null;
+    try {
+        const q = query(
+            collection(db, 'ghosts'),
+            where('circuit_id', '==', circuitId),
+            orderBy('temps_ms', 'asc'),
+            limit(1)
+        );
+        const snap = await getDocs(q);
+        if (snap.empty) return null;
+        const d = snap.data ? snap.data() : snap.docs[0].data();
+        return { pseudo: d.pseudo, temps_ms: d.temps_ms };
+    } catch (e) {
+        console.error('getBestTime erreur', e);
         return null;
     }
 }

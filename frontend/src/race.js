@@ -33,7 +33,7 @@ export function initRace(raceApi) {
     window.addEventListener('pointerdown', unlockRaceAudio);
 }
 
-function q(s) { return panel.querySelector(s); }
+function q(s) { return panel ? panel.querySelector(s) : null; }
 
 function unlockRaceAudio() {
     if (!raceAudioCtx) raceAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -206,6 +206,7 @@ function updateArrow() {
 }
 
 function setButtons() {
+    if (!panel) return;
     q('#race-create').disabled = false;
     q('#race-cp').disabled = !(mode === 'placing');
     q('#race-finish').disabled = !(mode === 'placing' && !!start);
@@ -214,7 +215,7 @@ function setButtons() {
     q('#race-publish').disabled = !(mode === 'ready');
     if (mode === 'ready') q('#race-publish').style.display = 'block';
 }
-function setStatus(t) { q('#race-status').textContent = t; }
+function setStatus(t) { const el = q('#race-status'); if (el) el.textContent = t; }
 
 function addMarker(p, color) {
     const g = new THREE.Group();
@@ -370,31 +371,40 @@ function tick() {
 async function loadLeaderboard(circuitId) {
     try {
         const top = await getTopGhosts(circuitId, 5);
+        const el = q('#race-leaderboard');
+        if (!el) return;
         if (top.length > 0) {
             let txt = '🏆 Top 5 :\n';
             top.forEach((g, i) => {
                 txt += `${i + 1}. ${g.pseudo} — ${(g.temps_ms / 1000).toFixed(2)}s\n`;
             });
-            q('#race-leaderboard').textContent = txt;
+            el.textContent = txt;
         } else {
-            q('#race-leaderboard').textContent = 'Aucun ghost enregistré.';
+            el.textContent = 'Aucun ghost enregistré.';
         }
     } catch (e) {
         console.error('Erreur leaderboard', e);
     }
 }
 
-async function loadCircuitFromURL() {
-    const params = new URLSearchParams(window.location.search);
-    const circuitId = params.get('circuit');
-    if (!circuitId) return;
+/**
+ * Charge et lance un circuit depuis son ID Firestore.
+ * Utilisé à la fois par l'URL (?circuit=xxx) et par la liste d'accueil.
+ * Retourne true si succès, false sinon.
+ */
+export async function loadCircuitById(circuitId) {
+    if (!circuitId) return false;
+    if (!api) {
+        console.error('loadCircuitById : race non initialisé');
+        return false;
+    }
     
     try {
         setStatus('Chargement du circuit...');
         const circuit = await getCircuit(circuitId);
         if (!circuit) {
             setStatus('❌ Circuit introuvable');
-            return;
+            return false;
         }
         
         const { baseLat, baseLon, start: s, checkpoints: cp, finish: f } = circuit.data;
@@ -404,7 +414,7 @@ async function loadCircuitFromURL() {
         if (api.spawnAt) {
             api.spawnAt(baseLat, baseLon, s.x, s.z, qy);
         } else {
-            // Fallback si spawnAt n'existe pas encore
+            // Fallback si spawnAt n'existe pas
             api.startAt(baseLat, baseLon);
             setTimeout(() => api.teleportCar(s.x, s.z, qy), 100);
         }
@@ -428,10 +438,19 @@ async function loadCircuitFromURL() {
         // Charger ghost + leaderboard en arrière-plan (sans bloquer)
         loadBestGhost(circuitId).then(() => loadLeaderboard(circuitId));
         
+        return true;
     } catch (e) {
         console.error('Erreur chargement circuit', e);
         setStatus('❌ Erreur de chargement');
+        return false;
     }
+}
+
+async function loadCircuitFromURL() {
+    const params = new URLSearchParams(window.location.search);
+    const circuitId = params.get('circuit');
+    if (!circuitId) return;
+    await loadCircuitById(circuitId);
 }
 
 function checkURLParams() {

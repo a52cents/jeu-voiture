@@ -1388,6 +1388,11 @@ async function main() {
             const p = chassisBody.translation();
             const { lat, lon } = vector3ToLatLon(p.x, p.z);
             return [lat, lon];
+        },
+        onCircuit: async (circuitId) => {
+            // Lance le circuit directement via race.js
+            const { loadCircuitById } = await import('./race.js');
+            await loadCircuitById(circuitId);
         }
     });
     initRace({
