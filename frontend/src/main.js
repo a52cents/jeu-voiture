@@ -1142,10 +1142,15 @@ async function loadChunk(chunkInfo) {
     } finally { chunksLoading.delete(key); }
 }
 
-function startGameAt(lat, lon) {
-    baseLat = lat; baseLon = lon; hasStarted = true;
+async function startGameAt(lat, lon) {
+    baseLat = lat; baseLon = lon;
     loadedChunks.forEach(c => { scene.remove(c.group); if (c.physicsBody) physicsWorld.removeRigidBody(c.physicsBody); });
     loadedChunks.clear(); chunkQueue.length = 0;
+    showLoadingOverlay();
+    // Charge le chunk central en priorite et attend qu'il soit pret AVANT de
+    // positionner la voiture et d'activer le streaming : evite que des chunks
+    // plus loins (mais en cache) s'affichent avant celui sous la voiture.
+    try { await loadChunk({ key: '0_0', gridX: 0, gridZ: 0 }); } catch (e) { console.error('Chargement chunk central echoue', e); }
     if (chassisBody) {
         const h = spawnGroundHeight(0, 0);
         chassisBody.setTranslation({ x: 0, y: h + 1.0, z: 0 }, true);
@@ -1153,9 +1158,26 @@ function startGameAt(lat, lon) {
         chassisBody.setAngvel({ x: 0, y: 0, z: 0 }, true);
         chassisBody.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
     }
+    hasStarted = true;
     if (minimap) minimap.setView([baseLat, baseLon], 16, { animate: false });
+    hideLoadingOverlay();
     updateChunks();
 }
+let loadingOverlay = null;
+function initLoadingOverlay() {
+    loadingOverlay = document.createElement('div');
+    loadingOverlay.id = 'chunk-loading-overlay';
+    loadingOverlay.style.cssText = 'position:fixed;inset:0;z-index:20000;background:rgba(13,10,20,0.92);display:none;align-items:center;justify-content:center;flex-direction:column;color:#ffd9a0;font:600 15px monospace;';
+    loadingOverlay.innerHTML = `
+        <div style="width:44px;height:44px;border:4px solid #f2a65a3a;border-top-color:#f2a65a;border-radius:50%;animation:chunkspin .8s linear infinite;"></div>
+        <div style="margin-top:14px;">Chargement du terrain...</div>
+        <style>@keyframes chunkspin{to{transform:rotate(360deg)}}</style>
+    `;
+    document.body.appendChild(loadingOverlay);
+}
+function showLoadingOverlay() { if (loadingOverlay) loadingOverlay.style.display = 'flex'; }
+function hideLoadingOverlay() { if (loadingOverlay) loadingOverlay.style.display = 'none'; }
+
 function resetCarUpright() {
     if (!chassisBody) return;
     const p = chassisBody.translation();
@@ -1378,6 +1400,7 @@ async function main() {
     await loadRoadTemplate();
     await initPhysics();
     initEditorHUD();
+    initLoadingOverlay();
     setupControls();
     initSpeedo();
            initSettings({ setAmbiance });  // on passe setAmbiance aux settings pour que le select fonctionne
@@ -1396,11 +1419,16 @@ async function main() {
         }
     });
     initRace({
-        spawnAt: (lat, lon, x, z, qy) => {
-    baseLat = lat; baseLon = lon; hasStarted = true;
+        spawnAt: async (lat, lon, x, z, qy) => {
+    baseLat = lat; baseLon = lon;
     loadedChunks.forEach(c => { scene.remove(c.group); if (c.physicsBody) physicsWorld.removeRigidBody(c.physicsBody); });
     loadedChunks.clear(); chunkQueue.length = 0;
-    
+    showLoadingOverlay();
+    // Le point de depart d'un circuit n'est pas forcement en (0,0) local : on calcule
+    // le bon chunk a partir de x,z (et non 0_0 comme pour startGameAt).
+    const centerGX = Math.floor(x / WORLD_CHUNK_SIZE), centerGZ = Math.floor(z / WORLD_CHUNK_SIZE);
+    try { await loadChunk({ key: `${centerGX}_${centerGZ}`, gridX: centerGX, gridZ: centerGZ }); } catch (e) { console.error('Chargement chunk central echoue', e); }
+
     const h = spawnGroundHeight(x, z);
     chassisBody.setTranslation({ x, y: h + 1.0, z }, true);
     const yaw = qy || 0;
@@ -1408,8 +1436,10 @@ async function main() {
     chassisBody.setRotation({ x: q.x, y: q.y, z: q.z, w: q.w }, true);
     chassisBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
     chassisBody.setAngvel({ x: 0, y: 0, z: 0 }, true);
-    
+
+    hasStarted = true;
     if (minimap) minimap.setView([baseLat, baseLon], 16, { animate: false });
+    hideLoadingOverlay();
     updateChunks();
 },
         getCarPose: () => {

@@ -123,12 +123,16 @@ async function fetchOverpassWithRetries(query) {
   for (let attempt = 0; attempt < order.length; attempt++) {
     const endpoint = OVERPASS_ENDPOINTS[order[attempt]];
 
+    // Reservation atomique du creneau AVANT le premier await : sinon plusieurs
+    // requetes concurrentes (nos 3 chunks en parallele) lisent lastOverpassCall
+    // en meme temps, calculent le meme "wait", et repartent toutes ensemble.
     const now = Date.now();
-    const wait = OVERPASS_DELAY - (now - lastOverpassCall);
+    const slot = Math.max(now, lastOverpassCall + OVERPASS_DELAY);
+    lastOverpassCall = slot;
+    const wait = slot - now;
     if (wait > 0) await new Promise(r => setTimeout(r, wait));
 
     try {
-      lastOverpassCall = Date.now();
       const t0 = Date.now();
       const response = await axios.post(endpoint, `data=${encodeURIComponent(query)}`, {
         headers: { 'User-Agent': USER_AGENT, 'Content-Type': 'application/x-www-form-urlencoded' },
